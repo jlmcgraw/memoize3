@@ -21,11 +21,14 @@ import os
 import os.path
 import shlex
 import re
+# Try this regex module
+# import regex as re
 import hashlib
 import tempfile
 import pickle
 import subprocess
 import argparse
+
 
 __author__ = 'jlmcgraw@gmail.com'
 
@@ -39,25 +42,25 @@ opt_dirs = []
 ignore_dirs = []
 
 
-def hash_file(fname):
+def hash_file(fname: str):
     """ Return the hash of a file """
-    BLOCKSIZE = 65536
+    blocksize = 65536
 
     # Which type of hash to use
     hasher = hashlib.sha256()
 
     try:
         with open(fname, 'rb') as file_to_hash:
-            buf = file_to_hash.read(BLOCKSIZE)
+            buf = file_to_hash.read(blocksize)
             while len(buf) > 0:
                 hasher.update(buf)
-                buf = file_to_hash.read(BLOCKSIZE)
+                buf = file_to_hash.read(blocksize)
         return hasher.hexdigest()
     except Exception:
         return None
 
 
-def modtime(fname):
+def modtime(fname: str):
     """ Return modtime of a given file"""
     try:
         return os.path.getmtime(fname)
@@ -65,80 +68,78 @@ def modtime(fname):
         return 'bad_modtime'
 
 
-def files_up_to_date(files):
+def files_up_to_date(files: list) -> bool:
     """ Check the up_to_date status of all files used by this command """
 
     if files is None:
         if args.verbose:
-            print('No files yet')
+            print('MEMOIZE: No files yet')
         return False
 
     for (fname, hash_digest, mtime) in files:
         if opt_use_modtime:
             if modtime(fname) != mtime:
                 if args.verbose:
-                    print('MEMOIZE File modtime changed: ', fname)
+                    print('MEMOIZE: File modtime changed: ', fname)
                 return False
         else:
             if hash_file(fname) != hash_digest:
                 if args.verbose:
-                    print('MEMOIZE File hash changed: ', fname)
+                    print('MEMOIZE: File hash changed: ', fname)
                 return False
     return True
 
 
-def is_relevant(fname):
+def is_relevant(fname: str) -> bool:
+
     """ Do we want to consider this file as relevant?"""
     path1 = os.path.abspath(fname)
 
     # Do we want to ignore this directory and its subdirectories?
-
     if ignore_dirs:
         for ignorable_directory in ignore_dirs:
             path2 = os.path.abspath(ignorable_directory)
             if path1.startswith(path2):
 
                 if args.verbose:
-                    print('Ignoring: ', path1)
+                    print('MEMOIZE: Ignoring: ', path1)
 
                 return False
 
     # Do we want to specifically include this directory and its subdirectories?
-
     for additional_directory in opt_dirs:
         path2 = os.path.abspath(additional_directory)
 
         if path1.startswith(path2):
 
             if args.verbose:
-                print('Including: ', path1)
+                print('MEMOIZE: Including: ', path1)
 
             return True
 
     # Default is to ignore the file
-
     return False
 
 
-def generate_deps(cmd):
+def generate_deps(cmd: str) -> tuple:
     """ Gather dependencies for a command and store their hash and modtime """
     if args.verbose:
-        print ('Memoize running: ', cmd)
+        print('MEMOIZE: running: ', cmd)
 
-    #strace_output_filename = './strace_output'
+    # strace_output_filename = './strace_output'
     strace_output_filename = tempfile.mktemp()
 
     if args.verbose:
-        print("strace output saved in ",strace_output_filename)
-    
-    #wholecmd = \
-        #'strace -f -o %s -e trace=open,rename,stat,stat64,exit_group %s' \
-        #% (strace_output_filename, cmd)
+        print("MEMOIZE: strace output saved in ", strace_output_filename)
+
+    # wholecmd = \
+        # 'strace -f -o %s -e trace=open,rename,stat,stat64,exit_group %s' \
+        # % (strace_output_filename, cmd)
 
     wholecmd = \
         'strace -f -o %s -e trace=file,exit_group %s' \
         % (strace_output_filename, cmd)
-    
+
     # print(wholecmd)
     subprocess.call(wholecmd, shell=True)
 
@@ -150,54 +151,51 @@ def generate_deps(cmd):
     files = []
     files_dict = {}
 
+    # Things we'd like to match
+    regexes = [
+        r'.*open\("(.*)", .*',
+        r'.*stat64\("(.*)", .*',
+        r'.*rename\(".*", "(.*)"',
+        r'.*stat\("(.*)", .*',
+        r'.*openat\(AT_FDCWD, "(.*)", .*'
+        ]
+
     for line in output:
-        match1 = re.match(r'.*open\("(.*)", .*', line)
-        match2 = re.match(r'.*stat64\("(.*)", .*', line)
-        match3 = re.match(r'.*rename\(".*", "(.*)"', line)
-        match4 = re.match(r'.*stat\("(.*)", .*', line)
-        match5 = re.match(r'.*openat\(AT_FDCWD, "(.*)", .*', line)
-                           
-        if match1:
-            match = match1
-        elif match2:
-            match = match2
-        elif match3:
-            match = match3
-        elif match4:
-            match = match4
-        elif match5:
-            match = match5
-        else:
-            match = None
+        for regex in regexes:
+            match = re.match(regex, line)
 
-        if match:
+            if match:
 
-            # Get the name of the destination file
-            fname = os.path.normpath(match.group(1))
+                # Get the name of the destination file
+                fname = os.path.normpath(match.group(1))
 
-            # print("Matched ",fname)
+                # if args.verbose:
+                #     print("MEMOIZE: Regex {} matched {}".format(regex, fname))
 
-            if is_relevant(fname) and os.path.isfile(
-                    fname) and fname not in files_dict:
-                if args.verbose:
-                    print('Is relevant: ', fname)
+                if fname not in files_dict \
+                        and is_relevant(fname) \
+                        and os.path.isfile(fname):
 
-                # Add this file's MD5 and datestamp to our dictionary
-                # and mark that we've seen it already
-                files.append((fname, hash_file(fname), modtime(fname)))
-                files_dict[fname] = True
+                    # if args.verbose:
+                    #     print('MEMOIZE: Is relevant: ', fname)
 
-        # Get the exit code from strace output if it exists
-        match = re.match(r'.*exit_group\((.*)\).*', line)
+                    # Add this file's hash and datestamp to our dictionary
+                    # and mark that we've seen it already
+                    files.append((fname, hash_file(fname), modtime(fname)))
+                    files_dict[fname] = True
 
-        if match:
+            # Get the exit code from strace output if it exists
+            match = re.match(r'.*exit_group\((.*)\).*', line)
 
-            # Use that for our return code
-            status = int(match.group(1))
+            if match:
 
-    return (status, files)
+                # Use that for our return code
+                status = int(match.group(1))
 
-def read_deps(depsname):
+    return status, files
+
+
+def read_deps(depsname: str) -> dict:
     """ Unpickle the dependencies dictionary """
     try:
         pickle_file = open(depsname, 'rb')
@@ -208,16 +206,19 @@ def read_deps(depsname):
         deps = pickle.load(pickle_file)
         pickle_file.close()
         return deps
-    
+
+    # Return an empty dictionary if no existing dependencies
     return {}
 
-def write_deps(depsname, deps):
+
+def write_deps(depsname: str, deps: dict):
     """ Pickle the dependencies dictionary to a file """
     pickle_file = open(depsname, 'wb')
     pickle.dump(deps, pickle_file)
     pickle_file.close()
 
-def memoize_with_deps(depsname, deps, cmd):
+
+def memoize_with_deps(depsname: str, deps: dict, cmd: str) -> int:
     """ Run a command if it has no existing dependencies or if they're out of
     date. Save the captured dependencies
     """
@@ -231,12 +232,11 @@ def memoize_with_deps(depsname, deps, cmd):
     # Check the status of all of this command's files
 
     if files and files_up_to_date(files):
-        if args.verbose:
-            print('Up to date:', cmd)
+        # if args.verbose:
+        print('MEMOIZE: Up to date: {}'.format(cmd))
         return 0
     else:
-
-         # Run the command and collect list of files that it opens
+        # Run the command and collect list of files that it opens
         (status, files) = generate_deps(cmd)
 
         # If the command was successful...
@@ -255,12 +255,13 @@ def memoize_with_deps(depsname, deps, cmd):
 
         return status
 
+
 if __name__ == '__main__':
 
     # Parse the command line options
-    
+
     parser = argparse.ArgumentParser(
-        description='memoize any program or command')
+        description='Memoize any program or command.  By default it will only monitor files under the current directory')
 
     parser.add_argument(
         '-t',
@@ -310,8 +311,8 @@ if __name__ == '__main__':
     # Sort the individual elements of the command
     # Good idea or not?: Consider using this as the key
     # so the command could be rearranged without being considered out of date
-    
-    command_sorted = sorted(args.command)
+
+    # command_sorted = sorted(args.command)
 
     # Quote all the individual items in command and join them with a space
     # into a string
@@ -325,7 +326,7 @@ if __name__ == '__main__':
 
     if args.verbose:
         print('Command: ', args.command)
-        print('Command sorted: ', command_sorted)
+        # print('Command sorted: ', command_sorted)
         print('Command string: ', command_string)
         print('Ignoring these directory trees: ', args.ignore)
         print('Monitoring these directory trees: ', args.directory)
@@ -336,8 +337,10 @@ if __name__ == '__main__':
     opt_dirs = args.directory
     ignore_dirs = args.ignore
 
-    # Get 
+    # Get stored dependencies
     default_deps = read_deps(args.filename)
+
+    # Check the status of those dependencies and run the command if anything has changed
     memoize_status = memoize_with_deps(
         args.filename, default_deps, command_string)
 
